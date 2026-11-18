@@ -26,6 +26,9 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.6/babel.min.js"></script>
     <!-- FontAwesome Icons CDN -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- KaTeX: tampilan rumus matematika (tulis rumus di antara tanda $ ... $) -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
     <!-- Google Font Inter -->
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
 
@@ -90,7 +93,7 @@
 
         const MAPEL_LIST = [
             "PAI", "Kemuhammadiyahan", "Bahasa Indonesia", "Bahasa Arab", "IPA",
-            "Seni Rupa", "Pendidikan Pancasila", "Bahasa Jawa", "Matematika", "Bahasa Inggris",
+            "Seni Rupa", "PKn", "Bahasa Jawa", "Matematika", "Bahasa Inggris",
             "Informatika", "IPS", "Penjasorkes"
         ];
 
@@ -126,6 +129,304 @@
             return fileId ? `https://lh3.googleusercontent.com/d/${fileId}` : trimmed;
         };
 
+        // ----- Gambar pada pilihan jawaban (PG) & soal menjodohkan -----
+        // Penyimpanan pilihan PG: string biasa (lama) atau {t: teks, i: urlGambar}
+        const normOptions = (raw) => {
+            const arr = Array.isArray(raw) ? raw.slice(0, 4) : [];
+            while (arr.length < 4) arr.push('');
+            return {
+                options: arr.map(o => (o && typeof o === 'object') ? String(o.t || '') : String(o === undefined || o === null ? '' : o)),
+                optionImages: arr.map(o => (o && typeof o === 'object') ? formatImageUrl(o.i || '') : '')
+            };
+        };
+        const packOptions = (options, images) => options.map((txt, i) => {
+            const img = formatImageUrl((images && images[i]) || '');
+            return img ? { t: txt, i: img } : txt;
+        });
+        const cleanPairsForSave = (pairs) => (pairs || [])
+            .map(p => ({
+                left: String(p.left || '').trim(), leftImg: formatImageUrl(p.leftImg || ''),
+                right: String(p.right || '').trim(), rightImg: formatImageUrl(p.rightImg || '')
+            }))
+            .filter(p => (p.left || p.leftImg) && (p.right || p.rightImg));
+        const cleanDecoysForSave = (decoys) => (decoys || [])
+            .map(d => ({ text: String(d.text || '').trim(), img: formatImageUrl(d.img || '') }))
+            .filter(d => d.text || d.img);
+        // Bentuk soal yang dikirim ke server (opsi PG digabung dengan gambarnya)
+        const toServerQuestion = (q) => {
+            const { optionImages, ...rest } = q;
+            if (q.type === 'pilihan_ganda') rest.options = packOptions(q.options || [], optionImages);
+            return rest;
+        };
+        const normPairsFromServer = (list) => (Array.isArray(list) ? list : []).map(p => ({
+            left: p.left || '', leftImg: formatImageUrl(p.leftImg || ''),
+            right: p.right || '', rightImg: formatImageUrl(p.rightImg || '')
+        }));
+        const normDecoysFromServer = (list) => (Array.isArray(list) ? list : []).map(d => ({
+            text: d.text || '', img: formatImageUrl(d.img || '')
+        }));
+
+        // ----- Rumus matematika (KaTeX) -----
+        // Tulis rumus di antara tanda $ ... $ (sebaris) atau $$ ... $$ (baris sendiri). Untuk tanda dolar biasa: \$
+        const escapeHtml = (str) => String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        const mathToHtml = (text) => {
+            const src = String(text === undefined || text === null ? '' : text);
+            if (!src.includes('$') || !window.katex) return null; // tanpa rumus: tampil sebagai teks biasa
+            let out = '';
+            let i = 0;
+            while (i < src.length) {
+                const ch = src[i];
+                if (ch === '\\' && src[i + 1] === '$') { out += '$'; i += 2; continue; }
+                if (ch === '$') {
+                    const display = src[i + 1] === '$';
+                    const tok = display ? '$$' : '$';
+                    let j = i + tok.length;
+                    let found = -1;
+                    while (j < src.length) {
+                        if (src[j] === '\\') { j += 2; continue; }
+                        if (src.startsWith(tok, j)) { found = j; break; }
+                        j++;
+                    }
+                    if (found > i + tok.length) {
+                        const tex = src.slice(i + tok.length, found);
+                        try {
+                            out += window.katex.renderToString(tex, { displayMode: display, throwOnError: false, output: 'html' });
+                        } catch (e) {
+                            out += escapeHtml(src.slice(i, found + tok.length));
+                        }
+                        i = found + tok.length;
+                        continue;
+                    }
+                }
+                out += escapeHtml(ch);
+                i++;
+            }
+            return out;
+        };
+        const hasMath = (text) => typeof text === 'string' && text.includes('$');
+        const MathText = ({ text, className }) => {
+            const html = mathToHtml(text);
+            if (html === null) return <span className={className} style={{ whiteSpace: 'pre-wrap' }}>{text}</span>;
+            return <span className={className} style={{ whiteSpace: 'pre-wrap' }} dangerouslySetInnerHTML={{ __html: html }} />;
+        };
+
+        const MATH_SNIPPETS = [
+            ['Akar kuadrat', '$\\sqrt{a}$'],
+            ['Akar pangkat n', '$\\sqrt[n]{a}$'],
+            ['Pecahan', '$\\frac{a}{b}$'],
+            ['Pangkat', '$x^{2}$'],
+            ['Indeks', '$x_{1}$'],
+            ['Kali', '$a \\times b$'],
+            ['Bagi', '$a \\div b$'],
+            ['Plus-minus', '$\\pm$'],
+            ['Tidak sama', '$a \\neq b$'],
+            ['Kurang/lebih dari', '$a \\leq b$'],
+            ['Pi', '$\\pi$'],
+            ['Derajat', '$90^\\circ$'],
+            ['Akar dikali akar', '$\\sqrt{a} \\times \\sqrt{b} = \\sqrt{a \\times b}$'],
+            ['Kuadrat jumlah akar', '$\\left(\\sqrt{a}+\\sqrt{b}\\right)^{2} = (a+b)+2\\sqrt{ab}$'],
+            ['Rasionalisasi', '$\\frac{a}{\\sqrt{b}} = \\frac{a\\sqrt{b}}{b}$']
+        ];
+
+        // Palet simbol: klik tombol untuk menyisipkan rumus ke kolom teks yang terakhir diklik
+        const MathPalette = ({ t }) => {
+            const lastField = React.useRef(null);
+            const [hint, setHint] = useState('');
+            useEffect(() => {
+                const onFocus = (e) => {
+                    const el = e.target;
+                    if (el && (el.tagName === 'TEXTAREA' || (el.tagName === 'INPUT' && el.type === 'text')) && !el.closest('[data-math-palette]')) {
+                        lastField.current = el;
+                    }
+                };
+                document.addEventListener('focusin', onFocus);
+                return () => document.removeEventListener('focusin', onFocus);
+            }, []);
+            const insert = (snippet) => {
+                const el = lastField.current;
+                if (!el || !el.isConnected) { setHint('Klik dulu kolom teks (soal / pilihan jawaban) tempat rumus ingin ditaruh, lalu klik simbol.'); return; }
+                setHint('');
+                const start = el.selectionStart !== null ? el.selectionStart : el.value.length;
+                const end = el.selectionEnd !== null ? el.selectionEnd : el.value.length;
+                const proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+                const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+                const val = el.value.slice(0, start) + snippet + el.value.slice(end);
+                setter.call(el, val);
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+                const pos = start + snippet.length;
+                setTimeout(() => { try { el.focus(); el.setSelectionRange(pos, pos); } catch (e) {} }, 0);
+            };
+            return (
+                <details data-math-palette="1" className={`${t.cardInner} rounded-2xl p-3`}>
+                    <summary className="cursor-pointer text-xs font-bold text-indigo-600 dark:text-indigo-300 select-none">
+                        <i className="fas fa-square-root-variable mr-1.5"></i>Simbol &amp; rumus matematika (akar, pecahan, pangkat, dll.)
+                    </summary>
+                    <div className="mt-3 space-y-2.5">
+                        <p className={`text-[11px] ${t.sub} leading-relaxed`}>
+                            Rumus ditulis di antara tanda <strong>$ ... $</strong>. Klik kolom teks, lalu klik tombol di bawah untuk menyisipkan contoh rumus, kemudian ganti huruf a, b, n sesuai soal.
+                            Jangan menyalin rumus dari Microsoft Word (hasilnya akan berubah); ketik atau pakai tombol ini.
+                        </p>
+                        <div className="flex flex-wrap gap-1.5">
+                            {MATH_SNIPPETS.map(([label, snip]) => (
+                                <button key={label} type="button" title={label + '  ' + snip}
+                                    onMouseDown={(e) => e.preventDefault()}
+                                    onClick={() => insert(snip)}
+                                    className="px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 hover:border-indigo-500 text-xs text-slate-800 dark:text-slate-100">
+                                    <MathText text={snip} />
+                                </button>
+                            ))}
+                        </div>
+                        {hint && <p className="text-[11px] text-amber-600 dark:text-amber-400">{hint}</p>}
+                        <p className={`text-[11px] ${t.sub} leading-relaxed`}>
+                            Contoh tulisan: <code className="bg-slate-200 dark:bg-slate-800 px-1 rounded">Sederhanakan $\sqrt{'{'}12{'}'} + \sqrt{'{'}27{'}'}$</code>. Tanda dolar biasa (misal harga) ditulis <code className="bg-slate-200 dark:bg-slate-800 px-1 rounded">\$</code>.
+                            Rumus yang rumit bisa juga dibuat sebagai gambar (tangkapan layar) lalu dipakai lewat kolom link gambar.
+                        </p>
+                    </div>
+                </details>
+            );
+        };
+
+        // Pratinjau langsung hasil rumus di bawah kolom teks
+        const MathPreview = ({ text, t }) => hasMath(text) ? (
+            <div className="mt-1.5 px-3 py-2 rounded-xl border border-dashed border-indigo-400/60 bg-indigo-50/60 dark:bg-indigo-950/20 text-sm">
+                <span className="text-[10px] font-bold text-indigo-600 dark:text-indigo-300 uppercase tracking-wide block mb-0.5">Pratinjau</span>
+                <MathText text={text} className={t.title} />
+            </div>
+        ) : null;
+
+        // Teks + gambar (opsional). onZoom: tampilkan tombol perbesar.
+        const Vis = ({ text, img, onZoom, imgClass = 'max-h-40' }) => {
+            const [broken, setBroken] = useState(false);
+            const url = formatImageUrl(img);
+            return (
+                <span className="flex flex-col gap-1.5 min-w-0">
+                    {url && !broken && (
+                        <span className="relative inline-block self-start max-w-full">
+                            <img src={url} alt="" className={`${imgClass} max-w-full rounded-lg object-contain bg-white border border-slate-200 dark:border-slate-700`} onError={() => setBroken(true)} />
+                            {onZoom && (
+                                <span role="button" tabIndex={0} title="Perbesar gambar"
+                                    onClick={(e) => { e.stopPropagation(); e.preventDefault(); onZoom(url); }}
+                                    className="absolute bottom-1 right-1 w-6 h-6 rounded-md bg-slate-900/70 text-white text-[10px] flex items-center justify-center cursor-zoom-in">
+                                    <i className="fas fa-magnifying-glass-plus"></i>
+                                </span>
+                            )}
+                        </span>
+                    )}
+                    {url && broken && <span className="text-[11px] text-red-500">(gambar tidak dapat dimuat)</span>}
+                    {text ? <MathText text={text} className="break-words" /> : null}
+                </span>
+            );
+        };
+
+        // Kolom isian link gambar + pratinjau kecil
+        const ImgInput = ({ value, onChange, inputClass, placeholder }) => {
+            const url = formatImageUrl(value);
+            return (
+                <div className="space-y-1">
+                    <div className="flex items-center gap-1.5">
+                        <i className="fas fa-image text-slate-400 text-[11px]"></i>
+                        <input type="text" placeholder={placeholder || 'Link gambar (opsional)...'} className={`flex-1 min-w-0 ${inputClass} rounded-lg px-2.5 py-1.5 text-[11px]`} value={value || ''} onChange={(e) => onChange(e.target.value)} />
+                    </div>
+                    {url && <img src={url} alt="Pratinjau" className="max-h-16 rounded-md object-contain bg-white border border-slate-200 dark:border-slate-700" onError={(e) => { e.target.style.display = 'none'; }} />}
+                </div>
+            );
+        };
+
+        // Editor 4 pilihan jawaban PG (teks + gambar), dipakai di form input dan modal edit
+        const OptionsEditor = ({ options, images, correct, onCorrect, onChange, t, radioName }) => (
+            <div className="space-y-2.5">
+                {['A', 'B', 'C', 'D'].map((letter, optIdx) => (
+                    <div key={optIdx} className={`flex items-start gap-2.5 ${t.cardInner} p-3 rounded-2xl`}>
+                        <input type="radio" name={radioName} checked={parseInt(correct) === optIdx} onChange={() => onCorrect(optIdx)} className="w-4 h-4 accent-indigo-600 cursor-pointer mt-2" />
+                        <span className="w-5 text-center font-bold text-xs text-indigo-600 dark:text-indigo-400 mt-1.5">{letter}.</span>
+                        <div className="flex-1 min-w-0 space-y-1.5">
+                            <input
+                                type="text"
+                                placeholder={`Teks pilihan ${letter} (boleh kosong jika memakai gambar)...`}
+                                className={`w-full ${t.input} rounded-xl px-3 py-2 text-xs transition`}
+                                value={(options && options[optIdx]) || ''}
+                                onChange={(e) => { const o = [...options]; o[optIdx] = e.target.value; onChange(o, images); }}
+                            />
+                            <ImgInput inputClass={t.input} value={(images && images[optIdx]) || ''}
+                                onChange={(v) => { const im = [...(images || ['', '', '', ''])]; im[optIdx] = v; onChange(options, im); }} />
+                        </div>
+                    </div>
+                ))}
+            </div>
+        );
+
+        // Editor soal menjodohkan: pasangan (teks/gambar kiri & kanan) + jawaban pengecoh
+        const PairsEditor = ({ pairs, decoys, onChange, t }) => {
+            const setPair = (i, patch) => onChange(pairs.map((p, k) => k === i ? { ...p, ...patch } : p), decoys);
+            const setDecoy = (i, patch) => onChange(pairs, decoys.map((d, k) => k === i ? { ...d, ...patch } : d));
+            return (
+                <div className="space-y-3">
+                    <div className="flex justify-between items-center gap-2">
+                        <label className={`block text-xs ${t.label}`}>Daftar Pasangan (Kiri: Pernyataan ➔ Kanan: Jawaban) — masing-masing boleh teks, gambar, atau keduanya</label>
+                        <button type="button" onClick={() => onChange([...pairs, { left: '', leftImg: '', right: '', rightImg: '' }], decoys)}
+                            className="px-3 py-1.5 bg-indigo-600/10 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-600/20 rounded-xl text-[11px] font-bold border border-indigo-500/30 transition shrink-0">
+                            + Tambah Baris
+                        </button>
+                    </div>
+                    {pairs.map((pair, pIdx) => (
+                        <div key={pIdx} className={`flex items-start gap-2 ${t.cardInner} p-3 rounded-2xl`}>
+                            <span className="text-xs font-bold text-indigo-600 dark:text-indigo-400 w-5 mt-2">{pIdx + 1}.</span>
+                            <div className="flex-1 min-w-0 space-y-1.5">
+                                <input type="text" placeholder={`Pernyataan kiri #${pIdx + 1}...`} className={`w-full ${t.input} rounded-xl px-3 py-2 text-xs`} value={pair.left || ''} onChange={(e) => setPair(pIdx, { left: e.target.value })} />
+                                <ImgInput inputClass={t.input} value={pair.leftImg} onChange={(v) => setPair(pIdx, { leftImg: v })} />
+                            </div>
+                            <i className="fas fa-arrow-right text-slate-400 text-xs mt-3"></i>
+                            <div className="flex-1 min-w-0 space-y-1.5">
+                                <input type="text" placeholder={`Pasangan kanan #${pIdx + 1}...`} className={`w-full ${t.input} rounded-xl px-3 py-2 text-xs`} value={pair.right || ''} onChange={(e) => setPair(pIdx, { right: e.target.value })} />
+                                <ImgInput inputClass={t.input} value={pair.rightImg} onChange={(v) => setPair(pIdx, { rightImg: v })} />
+                            </div>
+                            {pairs.length > 2 && (
+                                <button type="button" onClick={() => onChange(pairs.filter((_, k) => k !== pIdx), decoys)} className="text-red-500 hover:text-red-600 p-1.5 mt-1.5">
+                                    <i className="fas fa-trash-can text-xs"></i>
+                                </button>
+                            )}
+                        </div>
+                    ))}
+
+                    <div className="border-t border-slate-200 dark:border-slate-800 pt-3">
+                        <div className="flex justify-between items-center gap-2 mb-1">
+                            <label className={`block text-xs font-bold ${t.label}`}>Jawaban Pengecoh (opsional)</label>
+                            <button type="button" onClick={() => onChange(pairs, [...decoys, { text: '', img: '' }])}
+                                className="px-3 py-1.5 bg-amber-500/10 text-amber-700 dark:text-amber-300 hover:bg-amber-500/20 rounded-xl text-[11px] font-bold border border-amber-500/30 transition shrink-0">
+                                + Tambah Pengecoh
+                            </button>
+                        </div>
+                        <p className={`text-[11px] ${t.sub} mb-2 leading-relaxed`}>
+                            Jawaban palsu yang tidak punya pasangan. Contoh: 5 pernyataan dengan 6 pilihan jawaban, satu di antaranya pengecoh. Siswa tidak tahu mana yang pengecoh.
+                        </p>
+                        {decoys.map((d, dIdx) => (
+                            <div key={dIdx} className={`flex items-start gap-2 ${t.cardInner} p-3 rounded-2xl mb-2`}>
+                                <i className="fas fa-ghost text-amber-500 text-xs mt-3"></i>
+                                <div className="flex-1 min-w-0 space-y-1.5">
+                                    <input type="text" placeholder={`Teks pengecoh #${dIdx + 1}...`} className={`w-full ${t.input} rounded-xl px-3 py-2 text-xs`} value={d.text || ''} onChange={(e) => setDecoy(dIdx, { text: e.target.value })} />
+                                    <ImgInput inputClass={t.input} value={d.img} onChange={(v) => setDecoy(dIdx, { img: v })} />
+                                </div>
+                                <button type="button" onClick={() => onChange(pairs, decoys.filter((_, k) => k !== dIdx))} className="text-red-500 hover:text-red-600 p-1.5 mt-1.5">
+                                    <i className="fas fa-trash-can text-xs"></i>
+                                </button>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            );
+        };
+
+        // Ringkasan kecil (teks + gambar mini) untuk daftar soal guru
+        const MiniVis = ({ text, img }) => {
+            const url = formatImageUrl(img);
+            return (
+                <span className="inline-flex items-center gap-1.5 min-w-0">
+                    {url && <img src={url} alt="" className="h-9 max-w-[4.5rem] rounded object-contain bg-white border border-slate-200 dark:border-slate-700" onError={(e) => { e.target.style.display = 'none'; }} />}
+                    {text ? (hasMath(text) ? <MathText text={text} /> : <span className="truncate">{text}</span>) : (!url ? <span className="italic text-slate-400">(kosong)</span> : null)}
+                </span>
+            );
+        };
+
         const sortQuestionsByRules = (qList) => {
             return [...qList].sort((a, b) => {
                 const oa = TYPE_ORDER[a.type || 'pilihan_ganda'] || 1;
@@ -149,9 +450,9 @@
             id: q.id !== undefined && q.id !== '' ? q.id : i + 1,
             type: q.type || 'pilihan_ganda',
             imageUrl: formatImageUrl(q.imageUrl || ''),
-            options: Array.isArray(q.options) ? q.options.slice(0, 4) : [],
-            pairs: Array.isArray(q.pairs) ? q.pairs : [],
-            rightOptions: Array.isArray(q.rightOptions) ? q.rightOptions : []
+            ...normOptions(q.options),
+            pairs: (Array.isArray(q.pairs) ? q.pairs : []).map(p => ({ left: p.left || '', leftImg: formatImageUrl(p.leftImg || '') })),
+            rightOptions: (Array.isArray(q.rightOptions) ? q.rightOptions : []).map(r => ({ text: r.text || '', img: formatImageUrl(r.img || '') }))
         })));
 
         const readStored = (key, fallback) => {
@@ -283,8 +584,9 @@
 
             // Form input soal
             const emptyForm = () => ({
-                question: '', imageUrl: '', options: ['', '', '', ''], correctAnswer: 0,
-                pairs: [{ left: '', right: '' }, { left: '', right: '' }], trueFalseAnswer: 'BENAR'
+                question: '', imageUrl: '', options: ['', '', '', ''], optionImages: ['', '', '', ''], correctAnswer: 0,
+                pairs: [{ left: '', leftImg: '', right: '', rightImg: '' }, { left: '', leftImg: '', right: '', rightImg: '' }],
+                decoys: [], trueFalseAnswer: 'BENAR'
             });
             const [selectedKelasInput, setSelectedKelasInput] = useState('Kelas VII');
             const [selectedTypeInput, setSelectedTypeInput] = useState('pilihan_ganda');
@@ -477,8 +779,9 @@
                                 id: q.id !== undefined && q.id !== '' ? q.id : i + 1,
                                 type: qType,
                                 imageUrl: formatImageUrl(q.imageUrl || q.image || ''),
-                                options: Array.isArray(q.options) ? q.options.slice(0, 4) : ["A", "B", "C", "D"],
-                                pairs: Array.isArray(q.pairs) ? q.pairs : [],
+                                ...normOptions(Array.isArray(q.options) ? q.options : ["A", "B", "C", "D"]),
+                                pairs: normPairsFromServer(q.pairs),
+                                decoys: normDecoysFromServer(q.decoys),
                                 correctAnswer: q.correctAnswer !== undefined && q.correctAnswer !== ''
                                     ? (qType === 'pilihan_ganda' ? Number(q.correctAnswer) : q.correctAnswer)
                                     : (qType === 'benar_salah' ? 'BENAR' : 0)
@@ -816,13 +1119,13 @@
                     setFormError("Teks pertanyaan wajib diisi.");
                     return;
                 }
-                if (selectedTypeInput === 'pilihan_ganda' && formQuestion.options.some(o => !o.trim())) {
-                    setFormError("Semua pilihan jawaban A-D wajib diisi.");
+                if (selectedTypeInput === 'pilihan_ganda' && formQuestion.options.some((o, i) => !o.trim() && !String((formQuestion.optionImages || [])[i] || '').trim())) {
+                    setFormError("Setiap pilihan jawaban A-D wajib berisi teks atau gambar.");
                     return;
                 }
-                const validPairs = formQuestion.pairs.filter(p => p.left.trim() && p.right.trim());
+                const validPairs = cleanPairsForSave(formQuestion.pairs);
                 if (selectedTypeInput === 'menjodohkan' && validPairs.length < 2) {
-                    setFormError("Soal menjodohkan minimal memiliki 2 pasangan yang terisi lengkap.");
+                    setFormError("Soal menjodohkan minimal memiliki 2 pasangan yang terisi lengkap (teks atau gambar di kiri dan kanan).");
                     return;
                 }
 
@@ -838,16 +1141,18 @@
                     imageUrl: selectedTypeInput === 'menjodohkan' ? '' : formatImageUrl(formQuestion.imageUrl)
                 };
                 if (selectedTypeInput === 'pilihan_ganda') {
-                    newQ.options = [...formQuestion.options];
+                    newQ.options = formQuestion.options.map(o => o.trim());
+                    newQ.optionImages = (formQuestion.optionImages || ['', '', '', '']).map(u => formatImageUrl(u));
                     newQ.correctAnswer = parseInt(formQuestion.correctAnswer);
                 } else if (selectedTypeInput === 'menjodohkan') {
                     newQ.pairs = validPairs;
+                    newQ.decoys = cleanDecoysForSave(formQuestion.decoys);
                 } else if (selectedTypeInput === 'benar_salah') {
                     newQ.correctAnswer = formQuestion.trueFalseAnswer;
                 }
 
                 setQuestions(prev => sortQuestionsByRules([...prev, newQ]));
-                await postToGas({ action: 'addQuestion', ...newQ }, "Gagal menyimpan ke Google Sheets");
+                await postToGas({ action: 'addQuestion', ...toServerQuestion(newQ) }, "Gagal menyimpan ke Google Sheets");
                 setFormQuestion(emptyForm());
                 setIsSavingQuestion(false);
             };
@@ -857,12 +1162,19 @@
                 const updatedQ = { ...editingQuestion };
                 if (updatedQ.type !== 'menjodohkan' && !String(updatedQ.question || '').trim()) return;
                 if (updatedQ.type === 'menjodohkan') {
-                    updatedQ.pairs = (updatedQ.pairs || []).filter(p => p.left.trim() && p.right.trim());
+                    updatedQ.pairs = cleanPairsForSave(updatedQ.pairs);
+                    updatedQ.decoys = cleanDecoysForSave(updatedQ.decoys);
+                    if (updatedQ.pairs.length < 2) return;
+                }
+                if (updatedQ.type === 'pilihan_ganda') {
+                    updatedQ.options = (updatedQ.options || ['', '', '', '']).map(o => String(o || '').trim());
+                    updatedQ.optionImages = (updatedQ.optionImages || ['', '', '', '']).map(u => formatImageUrl(u));
+                    if (updatedQ.options.some((o, i) => !o && !updatedQ.optionImages[i])) return;
                 }
                 updatedQ.imageUrl = formatImageUrl(updatedQ.imageUrl);
                 setQuestions(prev => sortQuestionsByRules(prev.map(q => q.id === updatedQ.id ? updatedQ : q)));
                 setEditingQuestion(null);
-                await postToGas({ action: 'updateQuestion', ...updatedQ }, "Gagal memperbarui soal di Google Sheets");
+                await postToGas({ action: 'updateQuestion', ...toServerQuestion(updatedQ) }, "Gagal memperbarui soal di Google Sheets");
             };
 
             const confirmDeleteQuestion = async () => {
@@ -1324,19 +1636,6 @@
                     (filterDaftarKelas === 'ALL' || (q.kelas && q.kelas.toLowerCase() === filterDaftarKelas.toLowerCase()))
                 );
 
-                const updatePair = (pIdx, side, value) => {
-                    setFormQuestion(prev => ({
-                        ...prev,
-                        pairs: prev.pairs.map((p, i) => i === pIdx ? { ...p, [side]: value } : p)
-                    }));
-                };
-                const updateEditPair = (pIdx, side, value) => {
-                    setEditingQuestion(prev => ({
-                        ...prev,
-                        pairs: (prev.pairs || []).map((p, i) => i === pIdx ? { ...p, [side]: value } : p)
-                    }));
-                };
-
                 return withModals(
                     <div className={`min-h-screen ${t.bg} flex flex-col transition-colors duration-300`}>
                         {renderGuruHeader(true)}
@@ -1349,7 +1648,7 @@
                                     setActiveGuruMenu('hasil_ujian');
                                     if (gasUrl) fetchResultsFromGas();
                                 })}
-                                {menuBtn('generate_token', 'fa-key', '4. Pengaturan Ujian', () => {
+                                {menuBtn('generate_token', 'fa-key', '4. Generate Token Ujian', () => {
                                     setActiveGuruMenu('generate_token');
                                     fetchTokenInfo();
                                 })}
@@ -1393,7 +1692,7 @@
 
                                         <p className={`text-[11px] ${t.sub} -mt-2`}>
                                             <i className="fas fa-circle-info text-indigo-500 mr-1"></i>
-                                            Durasi ujian diatur saat membuat token (menu 4. Pengaturan Ujian).
+                                            Durasi ujian diatur saat membuat token (menu 4. Generate Token Ujian).
                                         </p>
 
                                         <div className="space-y-4">
@@ -1402,6 +1701,8 @@
                                                     <i className="fas fa-circle-exclamation"></i><span>{formError}</span>
                                                 </div>
                                             )}
+
+                                            <MathPalette t={t} />
 
                                             {selectedTypeInput !== 'menjodohkan' && (
                                                 <React.Fragment>
@@ -1414,6 +1715,7 @@
                                                             value={formQuestion.question}
                                                             onChange={(e) => setFormQuestion({ ...formQuestion, question: e.target.value })}
                                                         ></textarea>
+                                                        <MathPreview text={formQuestion.question} t={t} />
                                                     </div>
                                                     <div>
                                                         <label className={`block text-xs ${t.label} mb-1.5 flex items-center justify-between`}>
@@ -1449,29 +1751,15 @@
                                             {selectedTypeInput === 'pilihan_ganda' && (
                                                 <div className="space-y-3">
                                                     <label className={`block text-xs ${t.label}`}>Pilihan Jawaban (Klik Radio untuk Menentukan Kunci Jawaban Benar)</label>
-                                                    {['A', 'B', 'C', 'D'].map((letter, optIdx) => (
-                                                        <div key={optIdx} className={`flex items-center gap-3 ${t.cardInner} p-3 rounded-2xl`}>
-                                                            <input
-                                                                type="radio"
-                                                                name="correctAnswer"
-                                                                checked={parseInt(formQuestion.correctAnswer) === optIdx}
-                                                                onChange={() => setFormQuestion({ ...formQuestion, correctAnswer: optIdx })}
-                                                                className="w-4 h-4 accent-indigo-600 cursor-pointer"
-                                                            />
-                                                            <span className="w-6 text-center font-bold text-xs text-indigo-600 dark:text-indigo-400">{letter}.</span>
-                                                            <input
-                                                                type="text"
-                                                                placeholder={`Pilihan jawaban ${letter}...`}
-                                                                className={`flex-1 min-w-0 ${t.input} rounded-xl px-4 py-2 text-xs transition`}
-                                                                value={formQuestion.options[optIdx] || ''}
-                                                                onChange={(e) => {
-                                                                    const newOpt = [...formQuestion.options];
-                                                                    newOpt[optIdx] = e.target.value;
-                                                                    setFormQuestion({ ...formQuestion, options: newOpt });
-                                                                }}
-                                                            />
-                                                        </div>
-                                                    ))}
+                                                    <OptionsEditor
+                                                        t={t}
+                                                        radioName="correctAnswer"
+                                                        options={formQuestion.options}
+                                                        images={formQuestion.optionImages || ['', '', '', '']}
+                                                        correct={formQuestion.correctAnswer}
+                                                        onCorrect={(i) => setFormQuestion(prev => ({ ...prev, correctAnswer: i }))}
+                                                        onChange={(o, im) => setFormQuestion(prev => ({ ...prev, options: o, optionImages: im }))}
+                                                    />
                                                 </div>
                                             )}
 
@@ -1487,29 +1775,12 @@
                                                             onChange={(e) => setFormQuestion({ ...formQuestion, question: e.target.value })}
                                                         />
                                                     </div>
-                                                    <div className="flex justify-between items-center gap-2">
-                                                        <label className={`block text-xs ${t.label}`}>Daftar Pasangan (Kiri: Pernyataan ➔ Kanan: Jawaban)</label>
-                                                        <button
-                                                            type="button"
-                                                            onClick={() => setFormQuestion({ ...formQuestion, pairs: [...formQuestion.pairs, { left: '', right: '' }] })}
-                                                            className="px-3 py-1.5 bg-indigo-600/10 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-600/20 rounded-xl text-[11px] font-bold border border-indigo-500/30 transition shrink-0"
-                                                        >
-                                                            + Tambah Baris
-                                                        </button>
-                                                    </div>
-                                                    {formQuestion.pairs.map((pair, pIdx) => (
-                                                        <div key={pIdx} className={`flex items-center gap-2 ${t.cardInner} p-3 rounded-2xl`}>
-                                                            <span className="text-xs font-bold text-indigo-600 dark:text-indigo-400 w-5">{pIdx + 1}.</span>
-                                                            <input type="text" placeholder={`Pernyataan Kiri #${pIdx + 1}...`} className={`flex-1 min-w-0 ${t.input} rounded-xl px-3 py-2 text-xs`} value={pair.left} onChange={(e) => updatePair(pIdx, 'left', e.target.value)} />
-                                                            <i className="fas fa-arrow-right text-slate-400 text-xs"></i>
-                                                            <input type="text" placeholder={`Pasangan Kanan #${pIdx + 1}...`} className={`flex-1 min-w-0 ${t.input} rounded-xl px-3 py-2 text-xs`} value={pair.right} onChange={(e) => updatePair(pIdx, 'right', e.target.value)} />
-                                                            {formQuestion.pairs.length > 2 && (
-                                                                <button type="button" onClick={() => setFormQuestion({ ...formQuestion, pairs: formQuestion.pairs.filter((_, idx) => idx !== pIdx) })} className="text-red-500 hover:text-red-600 p-1.5">
-                                                                    <i className="fas fa-trash-can text-xs"></i>
-                                                                </button>
-                                                            )}
-                                                        </div>
-                                                    ))}
+                                                    <PairsEditor
+                                                        t={t}
+                                                        pairs={formQuestion.pairs}
+                                                        decoys={formQuestion.decoys || []}
+                                                        onChange={(pairs, decoys) => setFormQuestion(prev => ({ ...prev, pairs, decoys }))}
+                                                    />
                                                 </div>
                                             )}
 
@@ -1592,7 +1863,7 @@
                                                         <span className="px-2.5 py-0.5 bg-violet-50 dark:bg-violet-950/80 text-violet-700 dark:text-violet-300 text-[10px] font-bold rounded-lg border border-violet-200 dark:border-violet-500/30 uppercase">{TYPE_LABELS[q.type || 'pilihan_ganda']}</span>
                                                     </div>
 
-                                                    <p className={`text-xs font-semibold ${t.title} mb-2 leading-relaxed`}>{idx + 1}. {q.question}</p>
+                                                    <p className={`text-xs font-semibold ${t.title} mb-2 leading-relaxed`}>{idx + 1}. <MathText text={q.question} /></p>
 
                                                     {q.imageUrl && (
                                                         <div className="mb-3 max-w-xs rounded-xl overflow-hidden border border-slate-300 dark:border-slate-800 bg-white dark:bg-slate-950 p-1.5">
@@ -1605,7 +1876,7 @@
                                                             {(q.options || []).map((opt, optIdx) => (
                                                                 <div key={optIdx} className={`px-3 py-2 rounded-xl text-xs flex items-center gap-2 border ${q.correctAnswer === optIdx ? 'bg-emerald-50 dark:bg-emerald-950/50 text-emerald-800 dark:text-emerald-300 border-emerald-400 dark:border-emerald-500/50 font-semibold' : 'bg-white dark:bg-slate-900/80 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-800'}`}>
                                                                     <span className="w-4 text-center font-bold text-slate-400">{String.fromCharCode(65 + optIdx)}.</span>
-                                                                    <span className="truncate">{opt}</span>
+                                                                    <MiniVis text={opt} img={(q.optionImages || [])[optIdx]} />
                                                                     {q.correctAnswer === optIdx && <i className="fas fa-check text-emerald-500 ml-auto"></i>}
                                                                 </div>
                                                             ))}
@@ -1617,11 +1888,22 @@
                                                             <p className="text-[11px] font-bold text-indigo-600 dark:text-indigo-300 mb-1">Kunci Pasangan Menjodohkan:</p>
                                                             {(q.pairs || []).map((p, pIdx) => (
                                                                 <div key={pIdx} className="flex items-center gap-2 text-slate-700 dark:text-slate-300">
-                                                                    <span className="font-semibold">{p.left}</span>
+                                                                    <span className="font-semibold"><MiniVis text={p.left} img={p.leftImg} /></span>
                                                                     <i className="fas fa-arrow-right text-[10px] text-indigo-500"></i>
-                                                                    <span className="text-emerald-600 dark:text-emerald-300 font-semibold">{p.right}</span>
+                                                                    <span className="text-emerald-600 dark:text-emerald-300 font-semibold"><MiniVis text={p.right} img={p.rightImg} /></span>
                                                                 </div>
                                                             ))}
+                                                            {(q.decoys || []).length > 0 && (
+                                                                <div className="pt-1.5 mt-1 border-t border-slate-200 dark:border-slate-800">
+                                                                    <p className="text-[11px] font-bold text-amber-600 dark:text-amber-400 mb-1">Jawaban pengecoh (tanpa pasangan):</p>
+                                                                    {q.decoys.map((d, dIdx) => (
+                                                                        <div key={dIdx} className="flex items-center gap-2 text-slate-600 dark:text-slate-400">
+                                                                            <i className="fas fa-ghost text-[10px] text-amber-500"></i>
+                                                                            <MiniVis text={d.text} img={d.img} />
+                                                                        </div>
+                                                                    ))}
+                                                                </div>
+                                                            )}
                                                         </div>
                                                     )}
 
@@ -1639,7 +1921,7 @@
                                                     )}
 
                                                     <div className="flex justify-end gap-2 pt-2 border-t border-slate-200 dark:border-slate-900">
-                                                        <button onClick={() => setEditingQuestion({ ...q, options: q.options ? [...q.options] : ['', '', '', ''], pairs: q.pairs ? q.pairs.map(p => ({ ...p })) : [] })} className={`px-3 py-1 rounded-lg text-xs font-medium transition flex items-center gap-1 ${t.btnSecondary} text-amber-600 dark:text-amber-400`}>
+                                                        <button onClick={() => setEditingQuestion({ ...q, options: q.options ? [...q.options] : ['', '', '', ''], optionImages: q.optionImages ? [...q.optionImages] : ['', '', '', ''], pairs: q.pairs ? q.pairs.map(p => ({ ...p })) : [], decoys: q.decoys ? q.decoys.map(d => ({ ...d })) : [] })} className={`px-3 py-1 rounded-lg text-xs font-medium transition flex items-center gap-1 ${t.btnSecondary} text-amber-600 dark:text-amber-400`}>
                                                             <i className="fas fa-pen-to-square"></i><span>Edit</span>
                                                         </button>
                                                         <button onClick={() => setDeletingQId(q.id)} className={`px-3 py-1 rounded-lg text-xs font-medium transition flex items-center gap-1 ${t.btnSecondary} text-red-600 dark:text-red-400`}>
@@ -1866,11 +2148,14 @@
                                         </span>
                                     </div>
 
+                                    <MathPalette t={t} />
+
                                     {editingQuestion.type !== 'menjodohkan' && (
                                         <React.Fragment>
                                             <div>
                                                 <label className={`block text-xs ${t.label} mb-1`}>Teks Pertanyaan / Soal</label>
                                                 <textarea rows="3" className={`w-full ${t.input} rounded-xl p-3 text-xs transition`} value={editingQuestion.question || ''} onChange={(e) => setEditingQuestion({ ...editingQuestion, question: e.target.value })}></textarea>
+                                                <MathPreview text={editingQuestion.question} t={t} />
                                             </div>
                                             <div>
                                                 <label className={`block text-xs ${t.label} mb-1`}>URL Gambar Soal (Opsional)</label>
@@ -1894,46 +2179,26 @@
                                     {editingQuestion.type === 'pilihan_ganda' && (
                                         <div className="space-y-2.5">
                                             <label className={`block text-xs ${t.label}`}>Pilihan Jawaban (Radio = Kunci Jawaban Benar)</label>
-                                            {['A', 'B', 'C', 'D'].map((letter, optIdx) => (
-                                                <div key={optIdx} className={`flex items-center gap-2 ${t.cardInner} p-2.5 rounded-xl`}>
-                                                    <input type="radio" name="editCorrect" checked={editingQuestion.correctAnswer === optIdx} onChange={() => setEditingQuestion({ ...editingQuestion, correctAnswer: optIdx })} className="w-4 h-4 accent-indigo-600 cursor-pointer" />
-                                                    <span className="text-xs font-bold text-indigo-600 dark:text-indigo-400 w-4">{letter}.</span>
-                                                    <input
-                                                        type="text"
-                                                        className={`flex-1 min-w-0 ${t.input} rounded-lg px-3 py-1.5 text-xs transition`}
-                                                        value={(editingQuestion.options && editingQuestion.options[optIdx]) || ''}
-                                                        onChange={(e) => {
-                                                            const newOpts = [...(editingQuestion.options || ['', '', '', ''])];
-                                                            newOpts[optIdx] = e.target.value;
-                                                            setEditingQuestion({ ...editingQuestion, options: newOpts });
-                                                        }}
-                                                    />
-                                                </div>
-                                            ))}
+                                            <OptionsEditor
+                                                t={t}
+                                                radioName="editCorrect"
+                                                options={editingQuestion.options || ['', '', '', '']}
+                                                images={editingQuestion.optionImages || ['', '', '', '']}
+                                                correct={editingQuestion.correctAnswer}
+                                                onCorrect={(i) => setEditingQuestion(prev => ({ ...prev, correctAnswer: i }))}
+                                                onChange={(o, im) => setEditingQuestion(prev => ({ ...prev, options: o, optionImages: im }))}
+                                            />
                                         </div>
                                     )}
 
                                     {editingQuestion.type === 'menjodohkan' && (
                                         <div className="space-y-2.5">
-                                            <div className="flex justify-between items-center">
-                                                <label className={`block text-xs ${t.label}`}>Daftar Pasangan Menjodohkan</label>
-                                                <button type="button" onClick={() => setEditingQuestion({ ...editingQuestion, pairs: [...(editingQuestion.pairs || []), { left: '', right: '' }] })} className="px-2.5 py-1 bg-indigo-600/10 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-600/20 rounded-lg text-[11px] font-bold border border-indigo-500/30 transition">
-                                                    + Tambah Pasangan
-                                                </button>
-                                            </div>
-                                            {(editingQuestion.pairs || []).map((pair, pIdx) => (
-                                                <div key={pIdx} className={`flex items-center gap-2 ${t.cardInner} p-2.5 rounded-xl`}>
-                                                    <span className="text-xs font-bold text-indigo-600 dark:text-indigo-400 w-4">{pIdx + 1}.</span>
-                                                    <input type="text" placeholder="Pernyataan Kiri..." className={`flex-1 min-w-0 ${t.input} rounded-lg px-2.5 py-1.5 text-xs`} value={pair.left || ''} onChange={(e) => updateEditPair(pIdx, 'left', e.target.value)} />
-                                                    <i className="fas fa-arrow-right text-slate-400 text-xs"></i>
-                                                    <input type="text" placeholder="Pasangan Kanan..." className={`flex-1 min-w-0 ${t.input} rounded-lg px-2.5 py-1.5 text-xs`} value={pair.right || ''} onChange={(e) => updateEditPair(pIdx, 'right', e.target.value)} />
-                                                    {(editingQuestion.pairs || []).length > 2 && (
-                                                        <button type="button" onClick={() => setEditingQuestion({ ...editingQuestion, pairs: editingQuestion.pairs.filter((_, idx) => idx !== pIdx) })} className="text-red-500 hover:text-red-600 p-1">
-                                                            <i className="fas fa-trash-can text-xs"></i>
-                                                        </button>
-                                                    )}
-                                                </div>
-                                            ))}
+                                            <PairsEditor
+                                                t={t}
+                                                pairs={editingQuestion.pairs || []}
+                                                decoys={editingQuestion.decoys || []}
+                                                onChange={(pairs, decoys) => setEditingQuestion(prev => ({ ...prev, pairs, decoys }))}
+                                            />
                                         </div>
                                     )}
 
@@ -2017,7 +2282,7 @@
                                                             <span className="text-xs font-bold text-indigo-700 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-950/80 px-3 py-1 rounded-lg border border-indigo-200 dark:border-indigo-500/30">Soal {idx + 1} dari {bankQuestions.length}</span>
                                                             <span className="text-[10px] font-bold text-violet-700 dark:text-violet-300 bg-violet-50 dark:bg-violet-950/80 px-2.5 py-1 rounded-lg border border-violet-200 dark:border-violet-500/30 uppercase">{TYPE_LABELS[cq.type || 'pilihan_ganda']}</span>
                                                         </div>
-                                                        <p className={`text-sm font-semibold ${t.title} mb-4 leading-relaxed`}>{cq.question}</p>
+                                                        <p className={`text-sm font-semibold ${t.title} mb-4 leading-relaxed`}><MathText text={cq.question} /></p>
                                                         {cq.imageUrl && (
                                                             <div className="mb-4 max-w-md mx-auto text-center bg-white dark:bg-slate-950 p-2 rounded-xl border border-slate-200 dark:border-slate-800">
                                                                 <img src={formatImageUrl(cq.imageUrl)} alt="Preview Soal" className="zoomable max-h-48 w-full object-contain rounded-lg cursor-pointer" onClick={() => setZoomedImage(formatImageUrl(cq.imageUrl))} onError={(e) => { e.target.style.display = 'none'; }} />
@@ -2028,7 +2293,7 @@
                                                                 {(cq.options || []).map((opt, optIdx) => (
                                                                     <div key={optIdx} className={`p-3 rounded-xl border text-xs flex items-center gap-3 ${cq.correctAnswer === optIdx ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-400 dark:border-emerald-500/60 text-emerald-800 dark:text-emerald-300 font-semibold' : 'bg-white dark:bg-slate-950/60 border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300'}`}>
                                                                         <span className={`w-6 h-6 rounded-lg flex items-center justify-center font-bold text-[11px] ${cq.correctAnswer === optIdx ? 'bg-emerald-600 text-white' : 'bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-400'}`}>{String.fromCharCode(65 + optIdx)}</span>
-                                                                        <span className="flex-1">{opt}</span>
+                                                                        <span className="flex-1 min-w-0"><Vis text={opt} img={(cq.optionImages || [])[optIdx]} onZoom={setZoomedImage} imgClass="max-h-32" /></span>
                                                                         {cq.correctAnswer === optIdx && <span className="text-[10px] bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 px-2 py-0.5 rounded font-bold">Kunci Jawaban</span>}
                                                                     </div>
                                                                 ))}
@@ -2040,10 +2305,16 @@
                                                                     <div key={pIdx} className="p-3 bg-white dark:bg-slate-950/80 rounded-xl border border-slate-200 dark:border-slate-800 flex items-center justify-between text-xs gap-2">
                                                                         <span className={`font-semibold ${t.title} flex items-center gap-2`}>
                                                                             <span className="w-5 h-5 rounded bg-indigo-600/20 text-indigo-600 dark:text-indigo-300 text-[10px] font-bold flex items-center justify-center">{pIdx + 1}</span>
-                                                                            {pair.left}
+                                                                            <Vis text={pair.left} img={pair.leftImg} onZoom={setZoomedImage} imgClass="max-h-24" />
                                                                         </span>
                                                                         <i className="fas fa-arrow-right text-indigo-500 text-xs"></i>
-                                                                        <span className="font-bold text-emerald-600 dark:text-emerald-300 bg-slate-50 dark:bg-slate-900 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-800">{pair.right}</span>
+                                                                        <span className="font-bold text-emerald-600 dark:text-emerald-300 bg-slate-50 dark:bg-slate-900 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-800"><Vis text={pair.right} img={pair.rightImg} onZoom={setZoomedImage} imgClass="max-h-24" /></span>
+                                                                    </div>
+                                                                ))}
+                                                                {(cq.decoys || []).map((d, dIdx) => (
+                                                                    <div key={'d' + dIdx} className="p-3 bg-amber-50 dark:bg-amber-950/20 rounded-xl border border-amber-300/60 dark:border-amber-500/30 flex items-center gap-2 text-xs">
+                                                                        <span className="text-[10px] font-bold text-amber-600 dark:text-amber-400 shrink-0"><i className="fas fa-ghost mr-1"></i>Pengecoh</span>
+                                                                        <Vis text={d.text} img={d.img} onZoom={setZoomedImage} imgClass="max-h-24" />
                                                                     </div>
                                                                 ))}
                                                             </div>
@@ -2230,7 +2501,7 @@
                                 </div>
 
                                 <div className="flex-1">
-                                    <p className={`text-sm sm:text-base font-semibold ${t.title} mb-4 leading-relaxed whitespace-pre-wrap`}>{currentQ.question}</p>
+                                    <p className={`text-sm sm:text-base font-semibold ${t.title} mb-4 leading-relaxed`}><MathText text={currentQ.question} /></p>
 
                                     {currentQ.imageUrl && (
                                         <div className="mb-4 max-w-md bg-white dark:bg-slate-950 p-2 rounded-xl border border-slate-200 dark:border-slate-800">
@@ -2258,7 +2529,7 @@
                                                         <span className={`w-7 h-7 rounded-lg flex items-center justify-center font-bold text-xs shrink-0 ${selected ? 'bg-indigo-600 text-white' : 'bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300'}`}>
                                                             {String.fromCharCode(65 + optIdx)}
                                                         </span>
-                                                        <span className="flex-1">{opt}</span>
+                                                        <span className="flex-1 min-w-0"><Vis text={opt} img={(currentQ.optionImages || [])[optIdx]} onZoom={setZoomedImage} /></span>
                                                     </button>
                                                 );
                                             })}
@@ -2268,27 +2539,44 @@
                                     {qType === 'menjodohkan' && (() => {
                                         const rightOptions = currentQ.rightOptions || [];
                                         const cur = (typeof currentAns === 'object' && currentAns) || {};
+                                        const letterOf = (i) => String.fromCharCode(65 + i);
                                         return (
-                                            <div className="space-y-2.5">
-                                                {(currentQ.pairs || []).map((p, pIdx) => (
-                                                    <div key={pIdx} className={`p-3 rounded-2xl border flex flex-col sm:flex-row sm:items-center gap-2 ${t.option}`}>
-                                                        <span className="flex items-center gap-2 flex-1 text-xs sm:text-sm font-semibold">
-                                                            <span className="w-6 h-6 rounded-lg bg-indigo-600/20 text-indigo-600 dark:text-indigo-300 text-[11px] font-bold flex items-center justify-center shrink-0">{pIdx + 1}</span>
-                                                            <span>{p.left}</span>
-                                                        </span>
-                                                        <i className="fas fa-arrow-right text-indigo-500 text-xs hidden sm:block"></i>
-                                                        <select
-                                                            className={`sm:w-64 ${t.select} rounded-xl px-3 py-2 text-xs cursor-pointer`}
-                                                            value={cur[pIdx] || ''}
-                                                            onChange={(e) => setMatchAnswer(currentQ, pIdx, e.target.value)}
-                                                        >
-                                                            <option value="" className={t.optBg}>-- Pilih pasangan --</option>
-                                                            {rightOptions.map((r, rIdx) => (
-                                                                <option key={rIdx} value={r} className={t.optBg}>{r}</option>
-                                                            ))}
-                                                        </select>
+                                            <div className="space-y-4">
+                                                <div className={`p-3 rounded-2xl border ${t.option}`}>
+                                                    <p className="text-[11px] font-bold text-indigo-600 dark:text-indigo-300 mb-2 uppercase tracking-wide">Pilihan Jawaban</p>
+                                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                                        {rightOptions.map((r, rIdx) => (
+                                                            <div key={rIdx} className="flex items-start gap-2.5 p-2.5 rounded-xl bg-white dark:bg-slate-900/70 border border-slate-200 dark:border-slate-800 text-xs sm:text-sm">
+                                                                <span className="w-6 h-6 rounded-lg bg-violet-600/20 text-violet-700 dark:text-violet-300 text-[11px] font-bold flex items-center justify-center shrink-0">{letterOf(rIdx)}</span>
+                                                                <Vis text={r.text} img={r.img} onZoom={setZoomedImage} imgClass="max-h-32" />
+                                                            </div>
+                                                        ))}
                                                     </div>
-                                                ))}
+                                                    {rightOptions.length > (currentQ.pairs || []).length && (
+                                                        <p className={`text-[11px] ${t.sub} mt-2`}>Jumlah pilihan jawaban lebih banyak daripada pernyataan; ada jawaban yang tidak dipakai.</p>
+                                                    )}
+                                                </div>
+                                                <div className="space-y-2.5">
+                                                    {(currentQ.pairs || []).map((p, pIdx) => (
+                                                        <div key={pIdx} className={`p-3 rounded-2xl border flex flex-col sm:flex-row sm:items-center gap-2 ${t.option}`}>
+                                                            <span className="flex items-start gap-2 flex-1 min-w-0 text-xs sm:text-sm font-semibold">
+                                                                <span className="w-6 h-6 rounded-lg bg-indigo-600/20 text-indigo-600 dark:text-indigo-300 text-[11px] font-bold flex items-center justify-center shrink-0">{pIdx + 1}</span>
+                                                                <Vis text={p.left} img={p.leftImg} onZoom={setZoomedImage} imgClass="max-h-32" />
+                                                            </span>
+                                                            <i className="fas fa-arrow-right text-indigo-500 text-xs hidden sm:block"></i>
+                                                            <select
+                                                                className={`sm:w-56 ${t.select} rounded-xl px-3 py-2 text-xs cursor-pointer`}
+                                                                value={cur[pIdx] !== undefined ? cur[pIdx] : ''}
+                                                                onChange={(e) => setMatchAnswer(currentQ, pIdx, e.target.value)}
+                                                            >
+                                                                <option value="" className={t.optBg}>-- Pilih jawaban --</option>
+                                                                {rightOptions.map((r, rIdx) => (
+                                                                    <option key={rIdx} value={String(rIdx)} className={t.optBg}>{letterOf(rIdx)}{r.text ? (hasMath(r.text) ? '. (rumus)' : '. ' + (r.text.length > 40 ? r.text.slice(0, 40) + '…' : r.text)) : (r.img ? '. (gambar)' : '')}</option>
+                                                                ))}
+                                                            </select>
+                                                        </div>
+                                                    ))}
+                                                </div>
                                             </div>
                                         );
                                     })()}
