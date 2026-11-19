@@ -416,6 +416,35 @@
             );
         };
 
+        // Panel teks bacaan yang dipakai bersama beberapa soal
+        const PassagePanel = ({ p, onZoom }) => (
+            <details open className="mb-4 rounded-2xl border border-amber-300/70 dark:border-amber-500/30 bg-amber-50/70 dark:bg-amber-950/20">
+                <summary className="cursor-pointer select-none px-4 py-2.5 text-xs font-bold text-amber-800 dark:text-amber-300 flex items-center gap-2">
+                    <i className="fas fa-book-open"></i>
+                    <span>Bacaan: {p.title}</span>
+                    <span className="ml-auto font-normal text-[11px] opacity-80">klik untuk menutup/membuka</span>
+                </summary>
+                <div className="px-4 pb-4 max-h-80 overflow-y-auto text-sm leading-relaxed text-slate-800 dark:text-slate-100">
+                    <Vis text={p.text} img={p.imageUrl} onZoom={onZoom} imgClass="max-h-56" />
+                </div>
+            </details>
+        );
+
+        // Pilihan teks bacaan pada form soal
+        const BacaanSelect = ({ passages, mapel, value, onChange, t }) => {
+            const list = passages.filter(x => (x.mapel || '').toLowerCase() === (mapel || '').toLowerCase());
+            return (
+                <div className={`${t.cardInner} p-3 rounded-2xl`}>
+                    <label className={`block text-xs ${t.label} mb-1.5`}><i className="fas fa-book-open mr-1.5 text-amber-500"></i>Teks Bacaan (opsional, untuk soal yang memakai cerita/paragraf)</label>
+                    <select className={`w-full ${t.select} rounded-xl px-4 py-2.5 text-xs transition cursor-pointer`} value={value || ''} onChange={(e) => onChange(e.target.value)}>
+                        <option value="" className={t.optBg}>— Tanpa teks bacaan —</option>
+                        {list.map(x => <option key={x.id} value={String(x.id)} className={t.optBg}>{x.title}{x.kelas && x.kelas !== 'Semua Kelas' ? ' (' + x.kelas + ')' : ''}</option>)}
+                    </select>
+                    {list.length === 0 && <p className={`text-[11px] ${t.sub} mt-1.5`}>Belum ada bacaan untuk mapel ini. Buat dulu di menu "5. Teks Bacaan".</p>}
+                </div>
+            );
+        };
+
         // Ringkasan kecil (teks + gambar mini) untuk daftar soal guru
         const MiniVis = ({ text, img }) => {
             const url = formatImageUrl(img);
@@ -427,12 +456,24 @@
             );
         };
 
+        // Urutan: jenis soal -> soal yang memakai bacaan yang sama dikelompokkan -> id
         const sortQuestionsByRules = (qList) => {
-            return [...qList].sort((a, b) => {
-                const oa = TYPE_ORDER[a.type || 'pilihan_ganda'] || 1;
-                const ob = TYPE_ORDER[b.type || 'pilihan_ganda'] || 1;
+            const groupMin = {};
+            const gkey = (q) => (q.type || 'pilihan_ganda') + '|' + q.bacaanId;
+            qList.forEach(q => {
+                if (!q.bacaanId) return;
+                const id = Number(q.id) || 0;
+                const k = gkey(q);
+                if (groupMin[k] === undefined || id < groupMin[k]) groupMin[k] = id;
+            });
+            const rank = (q) => q.bacaanId ? groupMin[gkey(q)] : (Number(q.id) || 0);
+            return [...qList].sort((x, y) => {
+                const oa = TYPE_ORDER[x.type || 'pilihan_ganda'] || 1;
+                const ob = TYPE_ORDER[y.type || 'pilihan_ganda'] || 1;
                 if (oa !== ob) return oa - ob;
-                return (Number(a.id) || 0) - (Number(b.id) || 0);
+                const ra = rank(x), rb = rank(y);
+                if (ra !== rb) return ra - rb;
+                return (Number(x.id) || 0) - (Number(y.id) || 0);
             });
         };
 
@@ -554,6 +595,14 @@
             const [selectedTeacherMapel, setSelectedTeacherMapel] = useState('');
             const [activeGuruMenu, setActiveGuruMenu] = useState('input_soal');
             const [editingQuestion, setEditingQuestion] = useState(null);
+            // Teks bacaan (stimulus) bersama
+            const [passages, setPassages] = useState([]);              // guru
+            const [selectedBacaanInput, setSelectedBacaanInput] = useState('');
+            const emptyPassage = () => ({ id: null, title: '', text: '', imageUrl: '', kelas: 'Semua Kelas' });
+            const [passageForm, setPassageForm] = useState(emptyPassage());
+            const [passageError, setPassageError] = useState('');
+            const [isSavingPassage, setIsSavingPassage] = useState(false);
+            const [examPassages, setExamPassages] = useState([]);       // siswa
             const [deletingQId, setDeletingQId] = useState(null);
             const [filterDaftarKelas, setFilterDaftarKelas] = useState('ALL');
             const [copiedTokenMapel, setCopiedTokenMapel] = useState('');
@@ -644,6 +693,7 @@
                             setRole('siswa');
                             setTicket(s.ticket);
                             setExamQuestions(s.examQuestions);
+                            setExamPassages(Array.isArray(s.examPassages) ? s.examPassages : []);
                             setStep(s.step);
                             if (s.student) setStudent(s.student);
                             if (s.selectedMapel) setSelectedMapel(s.selectedMapel);
@@ -724,6 +774,7 @@
                         if (r && r.ok) {
                             fetchResultsFromGas();
                             fetchBankSoal();
+                            fetchPassages();
                             if (selectedTeacherMapel) fetchTokenInfo(selectedTeacherMapel);
                         } else {
                             handleLogout();
@@ -739,10 +790,10 @@
                 if (step === 'instructions' || step === 'exam') {
                     saveSessionState({
                         step, student, selectedMapel, examDuration, answers, flagged,
-                        currentQIndex, timeLeft, violations, unlockedTypes, ticket, examQuestions
+                        currentQIndex, timeLeft, violations, unlockedTypes, ticket, examQuestions, examPassages
                     });
                 }
-            }, [step, student, selectedMapel, examDuration, answers, flagged, currentQIndex, timeLeft, violations, unlockedTypes, ticket, examQuestions]);
+            }, [step, student, selectedMapel, examDuration, answers, flagged, currentQIndex, timeLeft, violations, unlockedTypes, ticket, examQuestions, examPassages]);
 
             // Detik berjalan untuk hitung mundur masa berlaku token di dashboard guru
             useEffect(() => {
@@ -767,6 +818,14 @@
 
             // ---------- Guru: ambil bank soal (beserta kunci) dari Google Sheets ----------
             // Hanya bisa setelah login guru; server menolak tanpa password.
+            const fetchPassages = async () => {
+                if (!gasUrl) return;
+                try {
+                    const data = await gasGet({ action: 'getPassages', pass: teacherPass });
+                    if (Array.isArray(data)) setPassages(data.map(p => ({ ...p, id: String(p.id), imageUrl: formatImageUrl(p.imageUrl || '') })));
+                } catch (err) { console.error("Gagal mengambil teks bacaan:", err); }
+            };
+
             const fetchBankSoal = async () => {
                 if (!gasUrl) return;
                 try {
@@ -991,6 +1050,7 @@
                         return;
                     }
                     setExamQuestions(soal);
+                    setExamPassages((Array.isArray(r.passages) ? r.passages : []).map(b => ({ ...b, id: String(b.id), imageUrl: formatImageUrl(b.imageUrl || '') })));
                     setTicket(r.tiket);
                     setStartSeconds(Number(r.sisaDetik) > 0 ? Number(r.sisaDetik) : null);
                     setExamDuration(Number(r.durasi) || 60);
@@ -1093,6 +1153,7 @@
                         setStep('guru_dashboard');
                         fetchResultsFromGas();
                         fetchBankSoal();
+                        fetchPassages();
                     } else {
                         setTeacherError((r && r.message) || "Password Guru salah!");
                     }
@@ -1105,6 +1166,9 @@
 
             const selectSubjectForTeacher = (m) => {
                 setSelectedTeacherMapel(m);
+                setSelectedBacaanInput('');
+                setPassageForm(emptyPassage());
+                setPassageError('');
                 setTokenInfo(null);
                 setTokenError('');
                 setActiveGuruMenu('input_soal');
@@ -1138,7 +1202,8 @@
                     question: selectedTypeInput === 'menjodohkan'
                         ? (formQuestion.question.trim() || 'Pasangkanlah pernyataan di sebelah kiri dengan pasangan yang tepat di sebelah kanan:')
                         : formQuestion.question,
-                    imageUrl: selectedTypeInput === 'menjodohkan' ? '' : formatImageUrl(formQuestion.imageUrl)
+                    imageUrl: selectedTypeInput === 'menjodohkan' ? '' : formatImageUrl(formQuestion.imageUrl),
+                    bacaanId: selectedBacaanInput || ''
                 };
                 if (selectedTypeInput === 'pilihan_ganda') {
                     newQ.options = formQuestion.options.map(o => o.trim());
@@ -1155,6 +1220,41 @@
                 await postToGas({ action: 'addQuestion', ...toServerQuestion(newQ) }, "Gagal menyimpan ke Google Sheets");
                 setFormQuestion(emptyForm());
                 setIsSavingQuestion(false);
+            };
+
+            // ---------- Teks bacaan (stimulus) ----------
+            const handleSavePassage = async () => {
+                setPassageError('');
+                if (!selectedTeacherMapel) return;
+                if (!passageForm.title.trim()) { setPassageError('Judul bacaan wajib diisi (agar mudah dipilih saat membuat soal).'); return; }
+                if (!passageForm.text.trim() && !passageForm.imageUrl.trim()) { setPassageError('Isi teks bacaan atau link gambar.'); return; }
+                setIsSavingPassage(true);
+                const isEdit = !!passageForm.id;
+                const item = {
+                    id: isEdit ? String(passageForm.id) : String(Date.now()),
+                    mapel: selectedTeacherMapel,
+                    kelas: passageForm.kelas || 'Semua Kelas',
+                    title: passageForm.title.trim(),
+                    text: passageForm.text,
+                    imageUrl: formatImageUrl(passageForm.imageUrl)
+                };
+                setPassages(prev => isEdit ? prev.map(x => String(x.id) === item.id ? item : x) : [...prev, item]);
+                await postToGas({ action: isEdit ? 'updatePassage' : 'addPassage', ...item }, "Gagal menyimpan teks bacaan");
+                setPassageForm(emptyPassage());
+                setIsSavingPassage(false);
+            };
+
+            const handleDeletePassage = async (p) => {
+                const used = questions.filter(q => String(q.bacaanId || '') === String(p.id)).length;
+                const msg = used > 0
+                    ? `Hapus bacaan "${p.title}"? ${used} soal yang memakainya tidak akan dihapus, hanya dilepas dari bacaan ini.`
+                    : `Hapus bacaan "${p.title}"?`;
+                if (!window.confirm(msg)) return;
+                setPassages(prev => prev.filter(x => String(x.id) !== String(p.id)));
+                setQuestions(prev => prev.map(q => String(q.bacaanId || '') === String(p.id) ? { ...q, bacaanId: '' } : q));
+                if (String(selectedBacaanInput) === String(p.id)) setSelectedBacaanInput('');
+                if (passageForm.id && String(passageForm.id) === String(p.id)) setPassageForm(emptyPassage());
+                await postToGas({ action: 'deletePassage', id: p.id }, "Gagal menghapus teks bacaan");
             };
 
             const handleSaveEditQuestion = async () => {
@@ -1316,6 +1416,8 @@
                 setStep('login');
                 setRole('siswa');
                 setExamQuestions([]);
+                setExamPassages([]);
+                setPassages([]);
                 setTicket('');
                 setStudent({ name: '', nisn: '', kelas: 'Kelas VII', token: '' });
                 setTeacherPass('');
@@ -1631,6 +1733,10 @@
                     </button>
                 );
 
+                const passageMap = {};
+                passages.forEach(x => { passageMap[String(x.id)] = x; });
+                const mapelPassages = passages.filter(x => (x.mapel || '').toLowerCase() === (selectedTeacherMapel || '').toLowerCase());
+
                 const bankQuestions = questions.filter(q =>
                     (q.mapel && q.mapel.toLowerCase() === selectedTeacherMapel.toLowerCase()) &&
                     (filterDaftarKelas === 'ALL' || (q.kelas && q.kelas.toLowerCase() === filterDaftarKelas.toLowerCase()))
@@ -1651,6 +1757,10 @@
                                 {menuBtn('generate_token', 'fa-key', '4. Generate Token Ujian', () => {
                                     setActiveGuruMenu('generate_token');
                                     fetchTokenInfo();
+                                })}
+                                {menuBtn('bacaan', 'fa-book-open', '5. Teks Bacaan (Cerita/Paragraf)', () => {
+                                    setActiveGuruMenu('bacaan');
+                                    fetchPassages();
                                 })}
                             </div>
 
@@ -1701,6 +1811,8 @@
                                                     <i className="fas fa-circle-exclamation"></i><span>{formError}</span>
                                                 </div>
                                             )}
+
+                                            <BacaanSelect passages={passages} mapel={selectedTeacherMapel} value={selectedBacaanInput} onChange={setSelectedBacaanInput} t={t} />
 
                                             <MathPalette t={t} />
 
@@ -1864,6 +1976,9 @@
                                                     </div>
 
                                                     <p className={`text-xs font-semibold ${t.title} mb-2 leading-relaxed`}>{idx + 1}. <MathText text={q.question} /></p>
+                                                    {q.bacaanId && passageMap[String(q.bacaanId)] && (
+                                                        <span className="inline-flex items-center gap-1.5 mb-2 px-2.5 py-1 rounded-lg text-[11px] font-bold bg-amber-500/10 text-amber-700 dark:text-amber-300 border border-amber-500/30"><i className="fas fa-book-open"></i>Bacaan: {passageMap[String(q.bacaanId)].title}</span>
+                                                    )}
 
                                                     {q.imageUrl && (
                                                         <div className="mb-3 max-w-xs rounded-xl overflow-hidden border border-slate-300 dark:border-slate-800 bg-white dark:bg-slate-950 p-1.5">
@@ -1935,6 +2050,81 @@
                                 )}
 
                                 {/* ---- HASIL UJIAN ---- */}
+                                {/* ---- TEKS BACAAN ---- */}
+                                {activeGuruMenu === 'bacaan' && (
+                                    <div className="space-y-5">
+                                        <div className="border-b border-slate-200 dark:border-slate-800 pb-3">
+                                            <h2 className={`text-base font-bold ${t.title} flex items-center gap-2`}>
+                                                <i className="fas fa-book-open text-amber-500"></i>
+                                                <span>Teks Bacaan - {selectedTeacherMapel}</span>
+                                            </h2>
+                                            <p className={`text-xs ${t.sub} leading-relaxed`}>
+                                                Buat satu cerita/paragraf, lalu pilih bacaan itu pada beberapa soal di menu "1. Input Soal Baru". Siswa melihat bacaan di atas soal yang terkait.
+                                            </p>
+                                        </div>
+
+                                        <div className={`${t.cardInner} p-4 rounded-2xl space-y-3`}>
+                                            <h3 className={`text-xs font-bold ${t.title}`}>{passageForm.id ? 'Ubah Teks Bacaan' : 'Tambah Teks Bacaan Baru'}</h3>
+                                            {passageError && (
+                                                <div className="bg-red-500/10 border border-red-500/40 rounded-xl p-2.5 text-xs text-red-600 dark:text-red-300 font-medium">{passageError}</div>
+                                            )}
+                                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                                                <div className="sm:col-span-2">
+                                                    <label className={`block text-xs ${t.label} mb-1.5`}>Judul Bacaan *</label>
+                                                    <input type="text" placeholder="Contoh: Cerita Si Kancil" className={`w-full ${t.input} rounded-xl px-3 py-2.5 text-xs`} value={passageForm.title} onChange={(e) => setPassageForm(prev => ({ ...prev, title: e.target.value }))} />
+                                                </div>
+                                                <div>
+                                                    <label className={`block text-xs ${t.label} mb-1.5`}>Kelas</label>
+                                                    <select className={`w-full ${t.select} rounded-xl px-3 py-2.5 text-xs cursor-pointer`} value={passageForm.kelas} onChange={(e) => setPassageForm(prev => ({ ...prev, kelas: e.target.value }))}>
+                                                        {['Semua Kelas', 'Kelas VII', 'Kelas VIII', 'Kelas IX'].map(k => <option key={k} value={k} className={t.optBg}>{k}</option>)}
+                                                    </select>
+                                                </div>
+                                            </div>
+                                            <MathPalette t={t} />
+                                            <div>
+                                                <label className={`block text-xs ${t.label} mb-1.5`}>Isi Teks Bacaan *</label>
+                                                <textarea rows="10" placeholder="Tempel atau ketik cerita / paragraf di sini. Baris baru dan paragraf akan tampil sama seperti yang Bapak/Ibu ketik..." className={`w-full ${t.input} rounded-2xl p-3.5 text-xs leading-relaxed transition`} value={passageForm.text} onChange={(e) => setPassageForm(prev => ({ ...prev, text: e.target.value }))}></textarea>
+                                                <MathPreview text={passageForm.text} t={t} />
+                                            </div>
+                                            <div>
+                                                <label className={`block text-xs ${t.label} mb-1.5`}>Gambar Pendukung (opsional)</label>
+                                                <ImgInput inputClass={t.input} value={passageForm.imageUrl} onChange={(v) => setPassageForm(prev => ({ ...prev, imageUrl: v }))} placeholder="Link gambar / Google Drive..." />
+                                            </div>
+                                            <div className="flex gap-2">
+                                                <button disabled={isSavingPassage} onClick={handleSavePassage} className="px-5 py-2.5 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 disabled:opacity-60 text-white rounded-xl text-xs font-bold transition shadow-lg shadow-indigo-600/20">
+                                                    {isSavingPassage ? 'Menyimpan...' : (passageForm.id ? 'Simpan Perubahan' : 'Simpan Teks Bacaan')}
+                                                </button>
+                                                {(passageForm.id || passageForm.title || passageForm.text) && (
+                                                    <button onClick={() => { setPassageForm(emptyPassage()); setPassageError(''); }} className={`px-4 py-2.5 rounded-xl text-xs font-medium transition ${t.btnSecondary}`}>Batal / Kosongkan</button>
+                                                )}
+                                            </div>
+                                        </div>
+
+                                        <div className="space-y-2.5">
+                                            <h3 className={`text-xs font-bold ${t.title}`}>Daftar Bacaan {selectedTeacherMapel} ({mapelPassages.length})</h3>
+                                            {mapelPassages.length === 0 && <p className={`text-xs ${t.sub}`}>Belum ada teks bacaan untuk mapel ini.</p>}
+                                            {mapelPassages.map(x => {
+                                                const jumlah = questions.filter(q => String(q.bacaanId || '') === String(x.id)).length;
+                                                return (
+                                                    <div key={x.id} className={`${t.cardInner} p-3.5 rounded-2xl`}>
+                                                        <div className="flex items-start justify-between gap-3">
+                                                            <div className="min-w-0">
+                                                                <p className={`text-sm font-bold ${t.title} truncate`}>{x.title}</p>
+                                                                <p className={`text-[11px] ${t.sub}`}>{x.kelas || 'Semua Kelas'} • dipakai {jumlah} soal</p>
+                                                            </div>
+                                                            <div className="flex gap-1.5 shrink-0">
+                                                                <button onClick={() => { setPassageForm({ id: x.id, title: x.title, text: x.text, imageUrl: x.imageUrl || '', kelas: x.kelas || 'Semua Kelas' }); setPassageError(''); }} className={`px-3 py-1 rounded-lg text-xs font-medium transition ${t.btnSecondary} text-amber-600 dark:text-amber-400`}>Edit</button>
+                                                                <button onClick={() => handleDeletePassage(x)} className="px-3 py-1 rounded-lg text-xs font-medium bg-red-500/10 text-red-600 dark:text-red-400 hover:bg-red-500/20 border border-red-500/30 transition">Hapus</button>
+                                                            </div>
+                                                        </div>
+                                                        <p className={`text-xs ${t.sub} mt-2 line-clamp-3 whitespace-pre-wrap`}>{(x.text || '').slice(0, 220)}{(x.text || '').length > 220 ? '…' : ''}</p>
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    </div>
+                                )}
+
                                 {activeGuruMenu === 'hasil_ujian' && (
                                     <div className="space-y-4">
                                         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 dark:border-slate-800 pb-3">
@@ -2148,6 +2338,8 @@
                                         </span>
                                     </div>
 
+                                    <BacaanSelect passages={passages} mapel={selectedTeacherMapel} value={editingQuestion.bacaanId} onChange={(v) => setEditingQuestion(prev => ({ ...prev, bacaanId: v }))} t={t} />
+
                                     <MathPalette t={t} />
 
                                     {editingQuestion.type !== 'menjodohkan' && (
@@ -2282,6 +2474,7 @@
                                                             <span className="text-xs font-bold text-indigo-700 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-950/80 px-3 py-1 rounded-lg border border-indigo-200 dark:border-indigo-500/30">Soal {idx + 1} dari {bankQuestions.length}</span>
                                                             <span className="text-[10px] font-bold text-violet-700 dark:text-violet-300 bg-violet-50 dark:bg-violet-950/80 px-2.5 py-1 rounded-lg border border-violet-200 dark:border-violet-500/30 uppercase">{TYPE_LABELS[cq.type || 'pilihan_ganda']}</span>
                                                         </div>
+                                                        {cq.bacaanId && passageMap[String(cq.bacaanId)] && <PassagePanel p={passageMap[String(cq.bacaanId)]} onZoom={setZoomedImage} />}
                                                         <p className={`text-sm font-semibold ${t.title} mb-4 leading-relaxed`}><MathText text={cq.question} /></p>
                                                         {cq.imageUrl && (
                                                             <div className="mb-4 max-w-md mx-auto text-center bg-white dark:bg-slate-950 p-2 rounded-xl border border-slate-200 dark:border-slate-800">
@@ -2501,6 +2694,9 @@
                                 </div>
 
                                 <div className="flex-1">
+                                    {currentQ.bacaanId && examPassages.find(x => String(x.id) === String(currentQ.bacaanId)) && (
+                                        <PassagePanel p={examPassages.find(x => String(x.id) === String(currentQ.bacaanId))} onZoom={setZoomedImage} />
+                                    )}
                                     <p className={`text-sm sm:text-base font-semibold ${t.title} mb-4 leading-relaxed`}><MathText text={currentQ.question} /></p>
 
                                     {currentQ.imageUrl && (
