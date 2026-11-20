@@ -1385,6 +1385,27 @@
                 }
             };
 
+            const [deletingResultRow, setDeletingResultRow] = useState(null);
+            const handleDeleteResult = async (res) => {
+                const ok = window.confirm(`Hapus hasil ujian ini?\n\n${res.name} (NISN ${String(res.nisn).replace(/^'/, '')})\n${res.mapel} - skor ${res.score}\n\nData dihapus permanen dari Google Sheets, dan siswa ini dapat mengikuti ujian ${res.mapel} lagi dengan token aktif.`);
+                if (!ok) return;
+                setDeletingResultRow(res.row);
+                try {
+                    const r = await gasGet({ action: 'deleteResult', pass: teacherPass, row: res.row, nisn: res.nisn, mapel: res.mapel });
+                    if (r && r.ok) {
+                        setExamResults(prev => prev.filter(x => x.row !== res.row));
+                        fetchResultsFromGas(); // nomor baris sheet bergeser: muat ulang
+                    } else {
+                        window.alert((r && r.message) || 'Gagal menghapus hasil ujian.');
+                        fetchResultsFromGas();
+                    }
+                } catch (e) {
+                    window.alert('Tidak dapat terhubung ke server. Hasil belum dihapus.');
+                } finally {
+                    setDeletingResultRow(null);
+                }
+            };
+
             const filteredResults = examResults.filter(res =>
                 (filterKelas === 'ALL' || res.kelas === filterKelas) &&
                 (res.mapel && res.mapel.toLowerCase() === (selectedTeacherMapel || '').toLowerCase())
@@ -2163,11 +2184,12 @@
                                                         <th className="p-3.5 text-center">Skor</th>
                                                         <th className="p-3.5 text-center">Pelanggaran</th>
                                                         <th className="p-3.5">Status</th>
+                                                        <th className="p-3.5 text-center">Aksi</th>
                                                     </tr>
                                                 </thead>
                                                 <tbody className="divide-y divide-slate-200 dark:divide-slate-800/60 bg-white dark:bg-slate-900/50">
                                                     {filteredResults.map((res, idx) => (
-                                                        <tr key={idx} className="hover:bg-slate-50 dark:hover:bg-slate-900 transition">
+                                                        <tr key={res.row || idx} className="hover:bg-slate-50 dark:hover:bg-slate-900 transition">
                                                             <td className="p-3.5 text-slate-500 dark:text-slate-400 whitespace-nowrap">{res.time}</td>
                                                             <td className={`p-3.5 font-bold ${t.title}`}>{res.name}</td>
                                                             <td className="p-3.5 text-slate-600 dark:text-slate-300 font-mono">{res.nisn}</td>
@@ -2179,6 +2201,15 @@
                                                             </td>
                                                             <td className="p-3.5">
                                                                 <span className={`px-2 py-0.5 rounded-lg text-[10px] font-bold ${res.status && res.status.includes('Selesai') ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30' : 'bg-red-500/10 text-red-600 dark:text-red-400 border border-red-500/30'}`}>{res.status}</span>
+                                                            </td>
+                                                            <td className="p-3.5 text-center">
+                                                                <button
+                                                                    disabled={deletingResultRow === res.row}
+                                                                    onClick={() => handleDeleteResult(res)}
+                                                                    title="Hapus hasil ujian siswa ini"
+                                                                    className="px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-red-500/10 text-red-600 dark:text-red-400 hover:bg-red-500/20 border border-red-500/30 disabled:opacity-50 transition whitespace-nowrap">
+                                                                    <i className={`fas ${deletingResultRow === res.row ? 'fa-spinner fa-spin' : 'fa-trash-can'} mr-1`}></i>Hapus
+                                                                </button>
                                                             </td>
                                                         </tr>
                                                     ))}
